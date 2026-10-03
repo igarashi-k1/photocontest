@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>フォトコンテスト</title>
+<style>
+  :root { --main: #e8572a; --bg: #fff8f3; --text: #333; --sub: #888; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px 16px 40px; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap { max-width: 480px; margin: 0 auto; }
+  h1 { font-size: 22px; text-align: center; margin: 8px 0 20px; color: var(--main); }
+  .btns { display: flex; gap: 10px; }
+  .btn {
+    flex: 1; display: block; padding: 16px 8px; border: none; border-radius: 14px;
+    font-size: 17px; font-weight: bold; text-align: center; cursor: pointer;
+  }
+  .btn-main { background: var(--main); color: #fff; }
+  .btn-sub  { background: #fff; color: var(--main); border: 2px solid var(--main); }
+  .btn:disabled { opacity: .5; }
+  input[type=file] { display: none; }
+  #preview {
+    display: none; width: 100%; max-height: 60vh; object-fit: contain;
+    border-radius: 12px; background: #000; margin: 16px 0 8px;
+  }
+  label.f { display: block; font-size: 14px; color: var(--sub); margin: 14px 0 4px; }
+  input[type=text] {
+    width: 100%; padding: 12px; font-size: 16px; /* 16px未満だとiPhoneで拡大される */
+    border: 1px solid #ddd; border-radius: 10px; background: #fff;
+  }
+  #submit { width: 100%; margin-top: 22px; }
+  #msg { text-align: center; margin-top: 14px; min-height: 1.5em; font-weight: bold; }
+  #msg.err { color: #d00; }
+  .done { display: none; text-align: center; padding: 40px 0; }
+  .done .big { font-size: 56px; }
+  .done p { font-size: 18px; }
+  .note { font-size: 12px; color: var(--sub); text-align: center; margin-top: 24px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>フォトコンテスト</h1>
+
+  <div id="form">
+    <div class="btns">
+      <!-- capture 付き：スマホではカメラが直接起動する -->
+      <label class="btn btn-main" for="camera">📷 撮影する</label>
+      <label class="btn btn-sub" for="gallery">🖼 写真を選ぶ</label>
+    </div>
+    <input type="file" id="camera" accept="image/*" capture="environment">
+    <input type="file" id="gallery" accept="image/*">
+
+    <img id="preview" alt="プレビュー">
+
+    <label class="f" for="table">テーブル番号（必須）</label>
+    <input type="text" id="table" maxlength="10" inputmode="numeric">
+
+    <label class="f" for="nickname">ニックネーム（必須）</label>
+    <input type="text" id="nickname" maxlength="30" autocomplete="nickname">
+
+    <button class="btn btn-main" id="submit" disabled>投稿する</button>
+    <div id="msg"></div>
+  </div>
+
+  <div class="done" id="done">
+    <div class="big">🎉</div>
+    <p>投稿しました！<br>ありがとうございます。</p>
+    <button class="btn btn-sub" id="again">もう1枚投稿する</button>
+  </div>
+
+  <p class="note">投稿された写真は主催者のGoogleドライブに保存されます。</p>
+</div>
+
+<script>
+  // 中継（Cloudflare Workers）のURL。デプロイ後に表示されたURLに書き換える
+  const API_URL  = 'https://photocontest-upload.photocontest-3am.workers.dev';
+  const MAX_SIDE = 2400;   // 長辺をこのピクセル数に縮小して送る（通信量・時間の節約）
+  const QUALITY  = 0.88;   // JPEG画質
+
+  const $ = id => document.getElementById(id);
+  let imageData = null;    // 縮小済みのJPEG（Blob）
+
+  // テーブル番号・ニックネームは端末に覚えておく（2枚目以降の入力を省略）
+  const FIELDS = ['table', 'nickname'];
+  try { FIELDS.forEach(id => $(id).value = localStorage.getItem('pc_' + id) || ''); } catch (e) {}
+
+  ['camera', 'gallery'].forEach(id => $(id).addEventListener('change', e => {
+    const file = e.target.files[0];
+    e.target.value = '';           // 同じ写真を選び直しても change が起きるように
+    if (file) loadImage(file);
+  }));
+
+  async function loadImage(file) {
+    setMsg('写真を読み込み中…');
+    $('submit').disabled = true;
+    try {
+      imageData = await resize(file);
+      if ($('preview').src) URL.revokeObjectURL($('preview').src);
+      $('preview').src = URL.createObjectURL(imageData);
+      $('preview').style.display = 'block';
+      setMsg('');
+      updateSubmit();
+    } catch (err) {
+      imageData = null;
+      setMsg('写真を読み込めませんでした。別の写真でお試しください。', true);
+    }
+  }
+
+  // 縮小してJPEGのBlobにする（EXIFの向きはブラウザが自動で反映）
+  function resize(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const scale = Math.min(1, MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement('canvas');
+        c.width  = Math.round(img.naturalWidth  * scale);
+        c.height = Math.round(img.naturalHeight * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        c.toBlob(b => b ? resolve(b) : reject(), 'image/jpeg', QUALITY);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(); };
+      img.src = url;
+    });
+  }
+
+  FIELDS.forEach(id => $(id).addEventListener('input', updateSubmit));
+  function updateSubmit() {
+    $('submit').disabled = !(imageData && FIELDS.every(id => $(id).value.trim()));
+  }
+
+  $('submit').addEventListener('click', async () => {
+    const table = $('table').value.trim();
+    const nickname = $('nickname').value.trim();
+    if (!imageData || !table || !nickname) return;
+    try { FIELDS.forEach(id => localStorage.setItem('pc_' + id, $(id).value.trim())); } catch (e) {}
+
+    $('submit').disabled = true;
+    setMsg('送信中…しばらくお待ちください');
+    const body = new FormData();
+    body.append('table', table);
+    body.append('nickname', nickname);
+    body.append('photo', imageData, 'photo.jpg');
+
+    try {
+      const res = await fetch(API_URL, { method: 'POST', body });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `エラー（${res.status}）`);
+
+      $('form').style.display = 'none';
+      $('done').style.display = 'block';
+      window.scrollTo(0, 0);
+    } catch (err) {
+      const text = err instanceof TypeError ? '通信できませんでした。電波の良い場所でもう一度お試しください' : err.message;
+      setMsg('送信に失敗しました：' + text, true);
+      $('submit').disabled = false;
+    }
+  });
+
+  $('again').addEventListener('click', () => {
+    imageData = null;
+    $('preview').style.display = 'none';
+    if ($('preview').src) URL.revokeObjectURL($('preview').src);
+    $('preview').removeAttribute('src');
+    setMsg('');
+    updateSubmit();
+    $('done').style.display = 'none';
+    $('form').style.display = 'block';
+  });
+
+  function setMsg(text, isErr) {
+    $('msg').textContent = text;
+    $('msg').className = isErr ? 'err' : '';
+  }
+</script>
+</body>
+</html>
