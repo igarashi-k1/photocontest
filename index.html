@@ -38,6 +38,12 @@
   .done { display: none; text-align: center; padding: 40px 0; }
   .done .big { font-size: 56px; }
   .done p { font-size: 18px; }
+  #posted {
+    display: block; width: 100%; max-height: 50vh; object-fit: contain;
+    border-radius: 12px; background: #000; margin: 4px 0 6px;
+  }
+  .done .hint { font-size: 13px; color: var(--sub); margin: 0 0 14px; }
+  .done .btn { width: 100%; margin-top: 10px; }
   .note { font-size: 12px; color: var(--sub); text-align: center; margin-top: 24px; }
 </style>
 </head>
@@ -69,6 +75,9 @@
   <div class="done" id="done">
     <div class="big">🎉</div>
     <p>投稿しました！<br>ありがとうございます。</p>
+    <img id="posted" alt="投稿した写真">
+    <p class="hint">写真を長押ししても保存できます</p>
+    <button class="btn btn-main" id="save">📥 写真を端末に保存</button>
     <button class="btn btn-sub" id="again">もう1枚投稿する</button>
   </div>
 
@@ -83,6 +92,7 @@
 
   const $ = id => document.getElementById(id);
   let imageData = null;    // 縮小済みのJPEG（Blob）
+  let originalFile = null; // 撮影・選択した元の画像（端末への保存用）
 
   // テーブル番号・ニックネームは端末に覚えておく（2枚目以降の入力を省略）
   const FIELDS = ['table', 'nickname'];
@@ -99,6 +109,7 @@
     $('submit').disabled = true;
     try {
       imageData = await resize(file);
+      originalFile = file;
       if ($('preview').src) URL.revokeObjectURL($('preview').src);
       $('preview').src = URL.createObjectURL(imageData);
       $('preview').style.display = 'block';
@@ -106,6 +117,7 @@
       updateSubmit();
     } catch (err) {
       imageData = null;
+      originalFile = null;
       setMsg('写真を読み込めませんでした。別の写真でお試しください。', true);
     }
   }
@@ -152,6 +164,7 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `エラー（${res.status}）`);
 
+      $('posted').src = $('preview').src;
       $('form').style.display = 'none';
       $('done').style.display = 'block';
       window.scrollTo(0, 0);
@@ -162,8 +175,37 @@
     }
   });
 
+  // 投稿した写真（撮影・選択した元の画像）を端末に保存する
+  // スマホは共有シート（iPhoneは「画像を保存」で写真アプリへ）、それ以外はダウンロード
+  $('save').addEventListener('click', async () => {
+    if (!originalFile) return;
+    const file = new File([originalFile], saveName(originalFile), { type: originalFile.type || 'image/jpeg' });
+    const mobile = matchMedia('(pointer: coarse)').matches;
+    if (mobile && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); return; }
+      catch (err) { if (err.name === 'AbortError') return; }   // キャンセル時は何もしない
+    }
+    const url = URL.createObjectURL(file);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  });
+
+  // 保存時のファイル名（例：photocontest_20261006_153012.jpg）
+  function saveName(file) {
+    const ext = (file.name.match(/\.\w+$/) || ['.jpg'])[0].toLowerCase();
+    const d = new Date(), p = n => String(n).padStart(2, '0');
+    return `photocontest_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}${ext}`;
+  }
+
   $('again').addEventListener('click', () => {
     imageData = null;
+    originalFile = null;
+    $('posted').removeAttribute('src');
     $('preview').style.display = 'none';
     if ($('preview').src) URL.revokeObjectURL($('preview').src);
     $('preview').removeAttribute('src');
