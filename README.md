@@ -11,6 +11,7 @@
 | `index.html` / `site/index.html` | 投稿画面（同じ内容）。直下の `index.html` を GitHub Pages が表示する |
 | `worker/` | 中継プログラム。Cloudflare Workers に置く。ドライブの鍵はここだけが持つ |
 | `tools/get-refresh-token.mjs` | ドライブの鍵（リフレッシュトークン）を取得するツール。最初に一度だけ使う |
+| `qr.png` / `qr.svg` | 投稿画面のQRコード。配布物の印刷用（SVGは拡大しても劣化しない） |
 
 ## 設置済みの環境
 
@@ -23,6 +24,10 @@
 
 - 投稿画面を直したら：直下の `index.html` と `site/index.html` の両方を更新する
 - 中継を直したら：`cd worker` → `npx wrangler deploy`
+
+### 投稿画面のQRコード
+
+<img src="qr.png" alt="投稿画面のQRコード" width="200">
 
 ## 設置手順
 
