@@ -16,10 +16,10 @@
 
 | 項目 | 内容 |
 |---|---|
-| 投稿画面 | https://igarashi-k1.github.io/photocontest/ （リポジトリ: https://github.com/igarashi-k1/photocontest ） |
-| 中継 | https://photocontest-upload.photocontest-3am.workers.dev （Cloudflare アカウント: igarashi@3am.co.jp） |
-| Google Cloud | プロジェクト `photocontest-510506`（OAuth同意画面: 内部 / クライアント: デスクトップアプリ） |
-| 保存先 | 共有ドライブの `photocontest` フォルダ（`1GLbGWyu6qdV4QxC5ONaaaOwP3JJ68a8c`） |
+| 投稿画面 | GitHub Pages で公開。https://igarashi-k1.github.io/photocontest/ |
+| 中継 | Cloudflare Workers で写真を受け取り、ドライブへ保存 |
+| Google Cloud | ドライブに保存する許可（鍵）を出すためだけに使用。サーバーは動かしていない。Drive API 有効／OAuth（内部・デスクトップアプリ）。**受付中は削除しない** |
+| 保存先 | 共有ドライブの `photocontest` フォルダ |
 
 - 投稿画面を直したら：直下の `index.html` と `site/index.html` の両方を更新する
 - 中継を直したら：`cd worker` → `npx wrangler deploy`
