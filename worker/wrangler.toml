@@ -3,7 +3,7 @@ main = "src/index.js"
 compatibility_date = "2026-10-01"
 
 [vars]
-# 保存先のGoogleドライブフォルダID（gas版と同じフォルダ）
+# 保存先のGoogleドライブフォルダID
 FOLDER_ID = "1GLbGWyu6qdV4QxC5ONaaaOwP3JJ68a8c"
 # 投稿画面を置くURL（GitHub Pages）。末尾の / やパスは付けない
 ALLOWED_ORIGIN = "https://igarashi-k1.github.io"
