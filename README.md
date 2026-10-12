@@ -1,6 +1,6 @@
-# フォトコンテスト投稿システム（一般公開版）
+# フォトコンテスト投稿システム（web版）
 
-ログイン不要で誰でも投稿できる版です。写真の保存先は gas 版と同じGoogleドライブのフォルダです。
+ログイン不要で、スマホのブラウザから誰でも写真を投稿できます。投稿された写真はGoogleドライブのフォルダに保存されます。
 
 ```
 スマホのブラウザ ──▶ GitHub Pages（投稿画面） ──▶ Cloudflare Workers（中継） ──▶ Googleドライブ
@@ -8,7 +8,7 @@
 
 | フォルダ | 内容 |
 |---|---|
-| `site/index.html` | 投稿画面。GitHub Pages に置く |
+| `index.html` / `site/index.html` | 投稿画面（同じ内容）。直下の `index.html` を GitHub Pages が表示する |
 | `worker/` | 中継プログラム。Cloudflare Workers に置く。ドライブの鍵はここだけが持つ |
 | `tools/get-refresh-token.mjs` | ドライブの鍵（リフレッシュトークン）を取得するツール。最初に一度だけ使う |
 
@@ -21,7 +21,7 @@
 | Google Cloud | プロジェクト `photocontest-510506`（OAuth同意画面: 内部 / クライアント: デスクトップアプリ） |
 | 保存先 | 共有ドライブの `photocontest` フォルダ（`1GLbGWyu6qdV4QxC5ONaaaOwP3JJ68a8c`） |
 
-- 投稿画面を直したら：`site/index.html` を GitHub のリポジトリにも反映する（リポジトリの index.html を差し替え）
+- 投稿画面を直したら：直下の `index.html` と `site/index.html` の両方を更新する
 - 中継を直したら：`cd worker` → `npx wrangler deploy`
 
 ## 設置手順
@@ -73,7 +73,7 @@
 ## 設定の変更
 
 - **保存先フォルダ**：`worker/wrangler.toml` の `FOLDER_ID` を書き換えて `npx wrangler deploy`
-- **投稿一覧のスプレッドシート**：`SHEET_ID` にスプレッドシートのID（URLの `/d/` と `/edit` の間）を入れて `npx wrangler deploy`。1枚目のシートに「投稿日時／テーブル番号／ニックネーム／ファイル名／写真URL」の順で追記されます（gas 版のシートと同じ並び）
+- **投稿一覧のスプレッドシート**：`SHEET_ID` にスプレッドシートのID（URLの `/d/` と `/edit` の間）を入れて `npx wrangler deploy`。1枚目のシートに「投稿日時／テーブル番号／ニックネーム／ファイル名／写真URL」の順で追記されます
 - **投稿画面のURLが変わったとき**：`ALLOWED_ORIGIN` を新しいURL（`https://ドメイン` まで）にして `npx wrangler deploy`。これ以外のサイトからの送信は拒否されます
 - **受付終了**：Cloudflare のダッシュボードで Worker を削除するか、`ALLOWED_ORIGIN` を空にしてデプロイ
 
