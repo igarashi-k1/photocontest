@@ -1,0 +1,16 @@
+name = "photocontest-upload"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+# 保存先のGoogleドライブフォルダID（gas版と同じフォルダ）
+FOLDER_ID = "1GLbGWyu6qdV4QxC5ONaaaOwP3JJ68a8c"
+# 投稿画面を置くURL（GitHub Pages）。末尾の / やパスは付けない
+ALLOWED_ORIGIN = "https://igarashi-k1.github.io"
+# 投稿一覧を記録するスプレッドシートID（不要なら空のまま）
+SHEET_ID = ""
+
+# 以下はシークレットとして登録（このファイルには書かない）
+#   npx wrangler secret put GOOGLE_CLIENT_ID
+#   npx wrangler secret put GOOGLE_CLIENT_SECRET
+#   npx wrangler secret put GOOGLE_REFRESH_TOKEN
