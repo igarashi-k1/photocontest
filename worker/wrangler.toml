@@ -8,7 +8,7 @@ FOLDER_ID = "1GLbGWyu6qdV4QxC5ONaaaOwP3JJ68a8c"
 # 投稿画面を置くURL（GitHub Pages）。末尾の / やパスは付けない
 ALLOWED_ORIGIN = "https://igarashi-k1.github.io"
 # 投稿一覧を記録するスプレッドシートID（不要なら空のまま）
-SHEET_ID = ""
+SHEET_ID = "1SkkdMBSmZ_oefNLcRpKWpSX1JqO3wp1ZqT3Bs9NwWnI"
 
 # 以下はシークレットとして登録（このファイルには書かない）
 #   npx wrangler secret put GOOGLE_CLIENT_ID
