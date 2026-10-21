@@ -5,14 +5,19 @@
 //   FOLDER_ID       保存先フォルダのID
 //   ALLOWED_ORIGIN  投稿画面のURL（例: https://igarashi-k1.github.io）。カンマ区切りで複数可
 //   SHEET_ID        （任意）投稿一覧を追記するスプレッドシートのID
+//   SLIDESHOW_FOLDERS（任意）スライドショーで見せてよいフォルダのID。カンマ区切り。FOLDER_ID は常に含む
 // シークレット（npx wrangler secret put で登録）
 //   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN
+//   VIEW_KEY        （任意）スライドショーが写真を読むときの合言葉。未設定ならスライドショー用の機能は使えない
 
 const MAX_BYTES = 10 * 1024 * 1024;  // 1枚あたりの上限（10MB）
 const TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith('/slideshow/')) return slideshow(request, env, url);
+
     const cors = corsHeaders(request, env);
 
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
@@ -106,6 +111,103 @@ async function appendRow(token, sheetId, row) {
       body: JSON.stringify({ values: [row] }),
     });
   if (!res.ok) throw new Error(await res.text());
+}
+
+// ---- スライドショー用（写真の一覧と写真本体を返す） ----
+//   GET /slideshow/folders          見せてよいフォルダの一覧
+//   GET /slideshow/photos?folder=ID フォルダ内の写真の一覧
+//   GET /slideshow/photo/ID[?size=400] 写真本体（size 指定時は縮小版）
+// どれもヘッダー X-View-Key に VIEW_KEY が必要。スライドショーはパソコンのファイルから開くこともあるので送信元は制限しない
+
+const SS_CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'X-View-Key',
+  'Access-Control-Max-Age': '86400',
+};
+
+async function slideshow(request, env, url) {
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: SS_CORS });
+  if (request.method !== 'GET') return json({ error: 'GET で取得してください' }, 405, SS_CORS);
+  if (!env.VIEW_KEY) return json({ error: 'スライドショー用の合言葉（VIEW_KEY）が設定されていません' }, 503, SS_CORS);
+  if (!sameText(request.headers.get('X-View-Key') || '', env.VIEW_KEY)) return json({ error: '合言葉が正しくありません' }, 401, SS_CORS);
+
+  const folders = [env.FOLDER_ID, ...String(env.SLIDESHOW_FOLDERS || '').split(',')].map(s => s.trim()).filter(Boolean);
+  const route = url.pathname.slice('/slideshow/'.length);
+
+  try {
+    const token = await accessToken(env);
+
+    if (route === 'folders') {
+      const list = await Promise.all([...new Set(folders)].map(async id => {
+        const f = await driveJson(token, `files/${id}?fields=id,name&supportsAllDrives=true`).catch(() => null);
+        return f && { id: f.id, name: f.name };
+      }));
+      return json({ folders: list.filter(Boolean) }, 200, SS_CORS);
+    }
+
+    if (route === 'photos') {
+      const folder = url.searchParams.get('folder') || folders[0];
+      if (!folders.includes(folder)) return json({ error: 'このフォルダは見られません' }, 403, SS_CORS);
+      const q = `'${folder}' in parents and trashed = false and mimeType contains 'image/'`;
+      const photos = [];
+      let pageToken = '';
+      do {
+        const data = await driveJson(token, 'files?' + new URLSearchParams({
+          q, pageSize: '1000', corpora: 'allDrives', supportsAllDrives: 'true', includeItemsFromAllDrives: 'true',
+          fields: 'nextPageToken,files(id,name,mimeType,createdTime,description)',
+          ...(pageToken ? { pageToken } : {}),
+        }));
+        photos.push(...data.files);
+        pageToken = data.nextPageToken || '';
+      } while (pageToken);
+      return json({ photos }, 200, SS_CORS);
+    }
+
+    if (route.startsWith('photo/')) {
+      const id = route.slice('photo/'.length);
+      if (!/^[\w-]+$/.test(id)) return json({ error: '写真が見つかりません' }, 404, SS_CORS);
+      // 見せてよいフォルダの写真か確かめる（ほかのドライブのファイルは返さない）
+      const meta = await driveJson(token, `files/${id}?fields=parents,mimeType,thumbnailLink,trashed&supportsAllDrives=true`)
+        .catch(() => null);
+      if (!meta || meta.trashed || !String(meta.mimeType).startsWith('image/') ||
+          !(meta.parents || []).some(p => folders.includes(p))) {
+        return json({ error: '写真が見つかりません' }, 404, SS_CORS);
+      }
+      const auth = { headers: { Authorization: `Bearer ${token}` } };
+      const size = Math.min(1600, Number(url.searchParams.get('size')) || 0);
+      let res = null;
+      if (size && meta.thumbnailLink) {
+        // 縮小版はドライブのサムネイルを使う。取れなければ元の写真を返す
+        res = await fetch(meta.thumbnailLink.replace(/=s\d+[^/]*$/, '') + `=s${size}`, auth).catch(() => null);
+        if (res && !res.ok) res = null;
+      }
+      if (!res) res = await fetch(`https://www.googleapis.com/drive/v3/files/${id}?alt=media&supportsAllDrives=true`, auth);
+      if (!res.ok) throw new Error(`写真の取得失敗 ${res.status}`);
+      return new Response(res.body, {
+        headers: { ...SS_CORS, 'Content-Type': res.headers.get('Content-Type') || meta.mimeType, 'Cache-Control': 'private, max-age=86400' },
+      });
+    }
+
+    return json({ error: '不明なURLです' }, 404, SS_CORS);
+  } catch (e) {
+    console.error('スライドショー', e);
+    return json({ error: 'ドライブから読み込めませんでした' }, 502, SS_CORS);
+  }
+}
+
+async function driveJson(token, path) {
+  const res = await fetch('https://www.googleapis.com/drive/v3/' + path, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error('ドライブAPI失敗: ' + await res.text());
+  return res.json();
+}
+
+// 合言葉の比較（文字ごとの比較時間で中身を推測されないようにする）
+function sameText(a, b) {
+  const x = new TextEncoder().encode(a), y = new TextEncoder().encode(b);
+  let diff = x.length ^ y.length;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] || 0) ^ (y[i] || 0);
+  return diff === 0;
 }
 
 // ---- 補助 ----
