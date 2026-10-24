@@ -48,7 +48,9 @@ export default {
 
       if (env.SHEET_ID) {
         // 一覧への記録に失敗しても写真は保存済みなので、投稿は成功扱いにする
-        await appendRow(token, env.SHEET_ID, [jst(now), table, nickname, fileName, file.webViewLink])
+        await appendRow(token, env.SHEET_ID, {
+          投稿日時: jst(now), テーブル番号: table, ニックネーム: nickname, ファイル名: fileName, 写真URL: file.webViewLink,
+        })
           .catch(e => console.error('シート記録失敗', e));
       }
 
@@ -102,7 +104,17 @@ async function uploadToDrive(token, folderId, name, type, bytes, description) {
   return res.json();
 }
 
-async function appendRow(token, sheetId, row) {
+// 1行目の見出しの名前で書き込む列を決める（列を足したり並べ替えたりしてもずれないように）
+// 見出しが見つからないときは、従来どおり A〜E列に順に書く
+const SHEET_COLUMNS = ['投稿日時', 'テーブル番号', 'ニックネーム', 'ファイル名', '写真URL'];
+let cachedHeader = null;  // { cols, expires }
+
+async function appendRow(token, sheetId, record) {
+  const header = await sheetHeader(token, sheetId);
+  const matched = SHEET_COLUMNS.every(name => header.includes(name));
+  if (!matched) console.error('シートの見出しが見つからないため A〜E列に記録', header);
+  const row = matched ? header.map(name => record[name] ?? '') : SHEET_COLUMNS.map(name => record[name]);
+
   const res = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
     {
@@ -111,6 +123,16 @@ async function appendRow(token, sheetId, row) {
       body: JSON.stringify({ values: [row] }),
     });
   if (!res.ok) throw new Error(await res.text());
+}
+
+async function sheetHeader(token, sheetId) {
+  if (cachedHeader && cachedHeader.expires > Date.now()) return cachedHeader.cols;
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/1:1`,
+    { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error('見出しの取得失敗: ' + await res.text());
+  const cols = ((await res.json()).values?.[0] || []).map(s => String(s).trim());
+  cachedHeader = { cols, expires: Date.now() + 60_000 };  // 見出しを直したら1分ほどで反映される
+  return cols;
 }
 
 // ---- スライドショー用（写真の一覧と写真本体を返す） ----
