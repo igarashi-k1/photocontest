@@ -139,6 +139,7 @@ async function sheetHeader(token, sheetId) {
 //   GET /slideshow/folders          見せてよいフォルダの一覧
 //   GET /slideshow/photos?folder=ID フォルダ内の写真の一覧
 //   GET /slideshow/photo/ID[?size=400] 写真本体（size 指定時は縮小版）
+//   GET /slideshow/approved?column=適切 投稿一覧シートでその列が〇の写真（ファイル名とファイルID）
 // どれもヘッダー X-View-Key に VIEW_KEY が必要。スライドショーはパソコンのファイルから開くこともあるので送信元は制限しない
 
 const SS_CORS = {
@@ -186,6 +187,26 @@ async function slideshow(request, env, url) {
       return json({ photos }, 200, SS_CORS);
     }
 
+    if (route === 'approved') {
+      if (!env.SHEET_ID) return json({ error: '投稿一覧のスプレッドシート（SHEET_ID）が設定されていません' }, 503, SS_CORS);
+      const column = norm(url.searchParams.get('column') || '');
+      const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${env.SHEET_ID}/values/A:ZZ`,
+        { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error('シートの読み込み失敗: ' + await res.text());
+      const [header = [], ...rows] = (await res.json()).values || [];
+      const cols = header.map(norm);
+      const col = cols.indexOf(column), nameCol = cols.indexOf('ファイル名'), urlCol = cols.indexOf('写真URL');
+      if (col < 0) return json({ error: `シートに「${column}」の列が見つかりません` }, 404, SS_CORS);
+      const names = [], ids = [];
+      for (const r of rows) {
+        if (!CIRCLES.has(norm(r[col] || ''))) continue;
+        if (nameCol >= 0 && r[nameCol]) names.push(String(r[nameCol]).trim());
+        const m = urlCol >= 0 && String(r[urlCol] || '').match(/\/d\/([\w-]+)/);
+        if (m) ids.push(m[1]);
+      }
+      return json({ names, ids }, 200, SS_CORS);
+    }
+
     if (route.startsWith('photo/')) {
       const id = route.slice('photo/'.length);
       if (!/^[\w-]+$/.test(id)) return json({ error: '写真が見つかりません' }, 404, SS_CORS);
@@ -216,6 +237,14 @@ async function slideshow(request, env, url) {
     console.error('スライドショー', e);
     return json({ error: 'ドライブから読み込めませんでした' }, 502, SS_CORS);
   }
+}
+
+// 〇とみなす記号（入力のしかたで文字が違っても同じに扱う）
+const CIRCLES = new Set(['○', '〇', '◯', '◎', 'O', 'o']);
+
+// 全角・半角の違いと前後の空白をそろえる（「ＡＩおすすめ」と「AIおすすめ」を同じに扱う）
+function norm(s) {
+  return String(s).normalize('NFKC').trim();
 }
 
 async function driveJson(token, path) {
