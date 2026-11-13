@@ -141,6 +141,7 @@ async function sheetHeader(token, sheetId) {
 //   GET /slideshow/photo/ID[?size=400] 写真本体（size 指定時は縮小版）
 //   GET /slideshow/approved?column=適切 投稿一覧シートでその列が〇の写真（ファイル名とファイルID）
 //                                     &marks=any なら ×以外の印（◎〇△▲など）が付いた写真
+//   GET /slideshow/recommend         「AIおすすめ」に印がある写真の一覧（印・AI点数・AIコメント付き、おすすめ順）
 // どれもヘッダー X-View-Key に VIEW_KEY が必要。スライドショーはパソコンのファイルから開くこともあるので送信元は制限しない
 
 const SS_CORS = {
@@ -210,6 +211,34 @@ async function slideshow(request, env, url) {
       return json({ names, ids }, 200, SS_CORS);
     }
 
+    if (route === 'recommend') {
+      if (!env.SHEET_ID) return json({ error: '投稿一覧のスプレッドシート（SHEET_ID）が設定されていません' }, 503, SS_CORS);
+      const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${env.SHEET_ID}/values/A:ZZ`,
+        { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error('シートの読み込み失敗: ' + await res.text());
+      const [header = [], ...rows] = (await res.json()).values || [];
+      const cols = header.map(norm);
+      const at = name => cols.indexOf(name);
+      const col = at('AIおすすめ');
+      if (col < 0) return json({ error: 'シートに「AIおすすめ」の列が見つかりません' }, 404, SS_CORS);
+      const cell = (r, i) => (i >= 0 ? String(r[i] ?? '').trim() : '');
+      const items = [];
+      rows.forEach((r, i) => {
+        const mark = norm(cell(r, col));
+        if (!mark || CROSSES.has(mark)) return;
+        const score = Number(cell(r, at('AI点数')));
+        items.push({
+          row: i + 2, mark, id: (cell(r, at('写真URL')).match(/\/d\/([\w-]+)/) || [])[1] || '',
+          name: cell(r, at('ファイル名')), table: cell(r, at('テーブル番号')), nick: cell(r, at('ニックネーム')),
+          score: cell(r, at('AI点数')) && !isNaN(score) ? score : null, reason: cell(r, at('AIコメント')),
+        });
+      });
+      // おすすめ順：AI点数の高い順（点数がなければ ◎〇△▲ の順）、同じなら上の行から
+      const order = m => { const k = REC_MARKS.indexOf(m); return k < 0 ? REC_MARKS.length : k; };
+      items.sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || order(a.mark) - order(b.mark) || a.row - b.row);
+      return json({ items }, 200, SS_CORS);
+    }
+
     if (route.startsWith('photo/')) {
       const id = route.slice('photo/'.length);
       if (!/^[\w-]+$/.test(id)) return json({ error: '写真が見つかりません' }, 404, SS_CORS);
@@ -244,6 +273,8 @@ async function slideshow(request, env, url) {
 
 // 〇とみなす記号（入力のしかたで文字が違っても同じに扱う）
 const CIRCLES = new Set(['○', '〇', '◯', '◎', 'O', 'o']);
+// 「AIおすすめ」の印（おすすめ度の高い順）
+const REC_MARKS = ['◎', '〇', '○', '△', '▲'];
 // 印なしとみなす記号（marks=any のとき）
 const CROSSES = new Set(['×', '✕', '✗', 'X', 'x', '-', 'エラー']);
 
