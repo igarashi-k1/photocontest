@@ -9,8 +9,11 @@ FOLDER_ID = "1GLbGWyu6qdV4QxC5ONaaaOwP3JJ68a8c"
 ALLOWED_ORIGIN = "https://igarashi-k1.github.io"
 # 投稿一覧を記録するスプレッドシートID（不要なら空のまま）
 SHEET_ID = "1SkkdMBSmZ_oefNLcRpKWpSX1JqO3wp1ZqT3Bs9NwWnI"
+# スライドショーで見せてよい追加のフォルダID（カンマ区切り。保存先フォルダは常に見られる）
+SLIDESHOW_FOLDERS = ""
 
 # 以下はシークレットとして登録（このファイルには書かない）
 #   npx wrangler secret put GOOGLE_CLIENT_ID
 #   npx wrangler secret put GOOGLE_CLIENT_SECRET
 #   npx wrangler secret put GOOGLE_REFRESH_TOKEN
+#   npx wrangler secret put VIEW_KEY   （スライドショー用の合言葉）

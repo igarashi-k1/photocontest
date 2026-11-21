@@ -5,14 +5,19 @@
 //   FOLDER_ID       保存先フォルダのID
 //   ALLOWED_ORIGIN  投稿画面のURL（例: https://igarashi-k1.github.io）。カンマ区切りで複数可
 //   SHEET_ID        （任意）投稿一覧を追記するスプレッドシートのID
+//   SLIDESHOW_FOLDERS（任意）スライドショーで見せてよいフォルダのID。カンマ区切り。FOLDER_ID は常に含む
 // シークレット（npx wrangler secret put で登録）
 //   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN
+//   VIEW_KEY        （任意）スライドショーが写真を読むときの合言葉。未設定ならスライドショー用の機能は使えない
 
 const MAX_BYTES = 10 * 1024 * 1024;  // 1枚あたりの上限（10MB）
 const TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith('/slideshow/')) return slideshow(request, env, url);
+
     const cors = corsHeaders(request, env);
 
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
@@ -43,7 +48,9 @@ export default {
 
       if (env.SHEET_ID) {
         // 一覧への記録に失敗しても写真は保存済みなので、投稿は成功扱いにする
-        await appendRow(token, env.SHEET_ID, [jst(now), table, nickname, fileName, file.webViewLink])
+        await appendRow(token, env.SHEET_ID, {
+          投稿日時: jst(now), テーブル番号: table, ニックネーム: nickname, ファイル名: fileName, 写真URL: file.webViewLink,
+        })
           .catch(e => console.error('シート記録失敗', e));
       }
 
@@ -97,7 +104,17 @@ async function uploadToDrive(token, folderId, name, type, bytes, description) {
   return res.json();
 }
 
-async function appendRow(token, sheetId, row) {
+// 1行目の見出しの名前で書き込む列を決める（列を足したり並べ替えたりしてもずれないように）
+// 見出しが見つからないときは、従来どおり A〜E列に順に書く
+const SHEET_COLUMNS = ['投稿日時', 'テーブル番号', 'ニックネーム', 'ファイル名', '写真URL'];
+let cachedHeader = null;  // { cols, expires }
+
+async function appendRow(token, sheetId, record) {
+  const header = await sheetHeader(token, sheetId);
+  const matched = SHEET_COLUMNS.every(name => header.includes(name));
+  if (!matched) console.error('シートの見出しが見つからないため A〜E列に記録', header);
+  const row = matched ? header.map(name => record[name] ?? '') : SHEET_COLUMNS.map(name => record[name]);
+
   const res = await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
     {
@@ -106,6 +123,178 @@ async function appendRow(token, sheetId, row) {
       body: JSON.stringify({ values: [row] }),
     });
   if (!res.ok) throw new Error(await res.text());
+}
+
+async function sheetHeader(token, sheetId) {
+  if (cachedHeader && cachedHeader.expires > Date.now()) return cachedHeader.cols;
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/1:1`,
+    { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error('見出しの取得失敗: ' + await res.text());
+  const cols = ((await res.json()).values?.[0] || []).map(s => String(s).trim());
+  cachedHeader = { cols, expires: Date.now() + 60_000 };  // 見出しを直したら1分ほどで反映される
+  return cols;
+}
+
+// ---- スライドショー用（写真の一覧と写真本体を返す） ----
+//   GET /slideshow/folders          見せてよいフォルダの一覧
+//   GET /slideshow/photos?folder=ID フォルダ内の写真の一覧
+//   GET /slideshow/photo/ID[?size=400] 写真本体（size 指定時は縮小版）
+//   GET /slideshow/approved?column=適切 投稿一覧シートでその列が〇の写真（ファイル名とファイルID）
+//                                     &marks=any なら ×以外の印（◎〇△▲など）が付いた写真
+//   GET /slideshow/recommend         「AIおすすめ」に印がある写真の一覧（印・AI点数・AIコメント付き、おすすめ順）
+// どれもヘッダー X-View-Key に VIEW_KEY が必要。スライドショーはパソコンのファイルから開くこともあるので送信元は制限しない
+
+const SS_CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'X-View-Key',
+  'Access-Control-Max-Age': '86400',
+};
+
+async function slideshow(request, env, url) {
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: SS_CORS });
+  if (request.method !== 'GET') return json({ error: 'GET で取得してください' }, 405, SS_CORS);
+  if (!env.VIEW_KEY) return json({ error: 'スライドショー用の合言葉（VIEW_KEY）が設定されていません' }, 503, SS_CORS);
+  if (!sameText(request.headers.get('X-View-Key') || '', env.VIEW_KEY)) return json({ error: '合言葉が正しくありません' }, 401, SS_CORS);
+
+  const folders = [env.FOLDER_ID, ...String(env.SLIDESHOW_FOLDERS || '').split(',')].map(s => s.trim()).filter(Boolean);
+  const route = url.pathname.slice('/slideshow/'.length);
+
+  try {
+    const token = await accessToken(env);
+
+    if (route === 'folders') {
+      const list = await Promise.all([...new Set(folders)].map(async id => {
+        const f = await driveJson(token, `files/${id}?fields=id,name&supportsAllDrives=true`).catch(() => null);
+        return f && { id: f.id, name: f.name };
+      }));
+      return json({ folders: list.filter(Boolean) }, 200, SS_CORS);
+    }
+
+    if (route === 'photos') {
+      const folder = url.searchParams.get('folder') || folders[0];
+      if (!folders.includes(folder)) return json({ error: 'このフォルダは見られません' }, 403, SS_CORS);
+      const q = `'${folder}' in parents and trashed = false and mimeType contains 'image/'`;
+      const photos = [];
+      let pageToken = '';
+      do {
+        const data = await driveJson(token, 'files?' + new URLSearchParams({
+          q, pageSize: '1000', corpora: 'allDrives', supportsAllDrives: 'true', includeItemsFromAllDrives: 'true',
+          fields: 'nextPageToken,files(id,name,mimeType,createdTime,description)',
+          ...(pageToken ? { pageToken } : {}),
+        }));
+        photos.push(...data.files);
+        pageToken = data.nextPageToken || '';
+      } while (pageToken);
+      return json({ photos }, 200, SS_CORS);
+    }
+
+    if (route === 'approved') {
+      if (!env.SHEET_ID) return json({ error: '投稿一覧のスプレッドシート（SHEET_ID）が設定されていません' }, 503, SS_CORS);
+      const column = norm(url.searchParams.get('column') || '');
+      const anyMark = url.searchParams.get('marks') === 'any';
+      const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${env.SHEET_ID}/values/A:ZZ`,
+        { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error('シートの読み込み失敗: ' + await res.text());
+      const [header = [], ...rows] = (await res.json()).values || [];
+      const cols = header.map(norm);
+      const col = cols.indexOf(column), nameCol = cols.indexOf('ファイル名'), urlCol = cols.indexOf('写真URL');
+      if (col < 0) return json({ error: `シートに「${column}」の列が見つかりません` }, 404, SS_CORS);
+      const names = [], ids = [];
+      for (const r of rows) {
+        const v = norm(r[col] || '');
+        if (anyMark ? (!v || CROSSES.has(v)) : !CIRCLES.has(v)) continue;
+        if (nameCol >= 0 && r[nameCol]) names.push(String(r[nameCol]).trim());
+        const m = urlCol >= 0 && String(r[urlCol] || '').match(/\/d\/([\w-]+)/);
+        if (m) ids.push(m[1]);
+      }
+      return json({ names, ids }, 200, SS_CORS);
+    }
+
+    if (route === 'recommend') {
+      if (!env.SHEET_ID) return json({ error: '投稿一覧のスプレッドシート（SHEET_ID）が設定されていません' }, 503, SS_CORS);
+      const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${env.SHEET_ID}/values/A:ZZ`,
+        { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error('シートの読み込み失敗: ' + await res.text());
+      const [header = [], ...rows] = (await res.json()).values || [];
+      const cols = header.map(norm);
+      const at = name => cols.indexOf(name);
+      const col = at('AIおすすめ');
+      if (col < 0) return json({ error: 'シートに「AIおすすめ」の列が見つかりません' }, 404, SS_CORS);
+      const cell = (r, i) => (i >= 0 ? String(r[i] ?? '').trim() : '');
+      const items = [];
+      rows.forEach((r, i) => {
+        const mark = norm(cell(r, col));
+        if (!mark || CROSSES.has(mark)) return;
+        const score = Number(cell(r, at('AI点数')));
+        items.push({
+          row: i + 2, mark, id: (cell(r, at('写真URL')).match(/\/d\/([\w-]+)/) || [])[1] || '',
+          name: cell(r, at('ファイル名')), table: cell(r, at('テーブル番号')), nick: cell(r, at('ニックネーム')),
+          score: cell(r, at('AI点数')) && !isNaN(score) ? score : null, reason: cell(r, at('AIコメント')),
+        });
+      });
+      // おすすめ順：AI点数の高い順（点数がなければ ◎〇△▲ の順）、同じなら上の行から
+      const order = m => { const k = REC_MARKS.indexOf(m); return k < 0 ? REC_MARKS.length : k; };
+      items.sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || order(a.mark) - order(b.mark) || a.row - b.row);
+      return json({ items }, 200, SS_CORS);
+    }
+
+    if (route.startsWith('photo/')) {
+      const id = route.slice('photo/'.length);
+      if (!/^[\w-]+$/.test(id)) return json({ error: '写真が見つかりません' }, 404, SS_CORS);
+      // 見せてよいフォルダの写真か確かめる（ほかのドライブのファイルは返さない）
+      const meta = await driveJson(token, `files/${id}?fields=parents,mimeType,thumbnailLink,trashed&supportsAllDrives=true`)
+        .catch(() => null);
+      if (!meta || meta.trashed || !String(meta.mimeType).startsWith('image/') ||
+          !(meta.parents || []).some(p => folders.includes(p))) {
+        return json({ error: '写真が見つかりません' }, 404, SS_CORS);
+      }
+      const auth = { headers: { Authorization: `Bearer ${token}` } };
+      const size = Math.min(1600, Number(url.searchParams.get('size')) || 0);
+      let res = null;
+      if (size && meta.thumbnailLink) {
+        // 縮小版はドライブのサムネイルを使う。取れなければ元の写真を返す
+        res = await fetch(meta.thumbnailLink.replace(/=s\d+[^/]*$/, '') + `=s${size}`, auth).catch(() => null);
+        if (res && !res.ok) res = null;
+      }
+      if (!res) res = await fetch(`https://www.googleapis.com/drive/v3/files/${id}?alt=media&supportsAllDrives=true`, auth);
+      if (!res.ok) throw new Error(`写真の取得失敗 ${res.status}`);
+      return new Response(res.body, {
+        headers: { ...SS_CORS, 'Content-Type': res.headers.get('Content-Type') || meta.mimeType, 'Cache-Control': 'private, max-age=86400' },
+      });
+    }
+
+    return json({ error: '不明なURLです' }, 404, SS_CORS);
+  } catch (e) {
+    console.error('スライドショー', e);
+    return json({ error: 'ドライブから読み込めませんでした' }, 502, SS_CORS);
+  }
+}
+
+// 〇とみなす記号（入力のしかたで文字が違っても同じに扱う）
+const CIRCLES = new Set(['○', '〇', '◯', '◎', 'O', 'o']);
+// 「AIおすすめ」の印（おすすめ度の高い順）
+const REC_MARKS = ['◎', '〇', '○', '△', '▲'];
+// 印なしとみなす記号（marks=any のとき）
+const CROSSES = new Set(['×', '✕', '✗', 'X', 'x', '-', 'エラー']);
+
+// 全角・半角の違いと前後の空白をそろえる（「ＡＩおすすめ」と「AIおすすめ」を同じに扱う）
+function norm(s) {
+  return String(s).normalize('NFKC').trim();
+}
+
+async function driveJson(token, path) {
+  const res = await fetch('https://www.googleapis.com/drive/v3/' + path, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error('ドライブAPI失敗: ' + await res.text());
+  return res.json();
+}
+
+// 合言葉の比較（文字ごとの比較時間で中身を推測されないようにする）
+function sameText(a, b) {
+  const x = new TextEncoder().encode(a), y = new TextEncoder().encode(b);
+  let diff = x.length ^ y.length;
+  for (let i = 0; i < Math.max(x.length, y.length); i++) diff |= (x[i] || 0) ^ (y[i] || 0);
+  return diff === 0;
 }
 
 // ---- 補助 ----
